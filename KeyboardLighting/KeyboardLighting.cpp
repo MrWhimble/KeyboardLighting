@@ -18,53 +18,9 @@
 #include <algorithm>
 #include <numeric>
 
+using namespace std;
 
-using KeyData = std::unordered_map<int /*key id*/, int /*number of presses*/>;
-using KeyStates = std::unordered_map<DWORD, bool>;
-
-KeyStates keyStates = KeyStates();
-KeyData keyData = KeyData();
-//int keyDataMinCount = 0;
-//int keyDataMaxCount = 0;
-
-std::vector<std::pair<int, int>> keyDataCounts;
-int keyDataUniqueCounts;
-
-HHOOK keyboardHook;
-
-HANDLE console;
-
-std::vector<CorsairLedColor> ledData;
-
-const char* toString(CorsairError error)
-{
-	switch (error) {
-	case CE_Success:
-		return "CE_Success";
-	case CE_ServerNotFound:
-		return "CE_ServerNotFound";
-	case CE_NoControl:
-		return "CE_NoControl";
-	case CE_ProtocolHandshakeMissing:
-		return "CE_ProtocolHandshakeMissing";
-	case CE_IncompatibleProtocol:
-		return "CE_IncompatibleProtocol";
-	case CE_InvalidArguments:
-		return "CE_InvalidArguments";
-	default:
-		return "unknown error";
-	}
-}
-
-KeyStates getKeyStates() {
-	KeyStates k;
-	for (auto i = 1; i < 255; i++) {
-		k[i] = false;
-	}
-	return k;
-}
-
-CorsairLedId DWordToLedId(DWORD w) {
+const CorsairLedId DWordToLedId(DWORD w) {
 	switch (w) {
 	case 0x08: return CLK_Backspace;
 	case 0x09: return CLK_Tab;
@@ -180,9 +136,8 @@ CorsairLedId DWordToLedId(DWORD w) {
 	default: std::cout << w << "\n"; return CLI_Invalid;
 	}
 }
-
 const char* LedIdToString(CorsairLedId id) {
-	switch(id) {
+	switch (id) {
 	case CLK_0: return "CLK_0";
 	case CLK_1: return "CLK_1";
 	case CLK_2: return "CLK_2";
@@ -335,87 +290,177 @@ const char* LedIdToString(CorsairLedId id) {
 	default: return "UNKNOWN";
 	}
 }
-
-bool SortFunction(std::pair<int, int> i, std::pair<int, int> j) { return i.second < j.second; }
-/*
-void CalculateCorrectMinMax() {
-	std::vector<int> counts;
-	for (auto& keyValue : keyData) {
-		if (keyValue.second == 0) continue;
-		counts.push_back(keyValue.second);
-	}
-	std::sort(counts.begin(), counts.end(), SortFunction);
-	int countsSize = counts.size();
-	keyDataMinCount = static_cast<int>(static_cast<float>(std::accumulate(counts.begin(), counts.end() - (countsSize * 0.5f), 0)) / static_cast<float>(countsSize * 0.5f));
-	keyDataMaxCount = static_cast<int>(static_cast<float>(std::accumulate(counts.begin() + (countsSize * 0.5f), counts.end(), 0)) / static_cast<float>(countsSize * 0.5f));
-}*/
-
-void FixKeyDataCounts() {
-	keyDataCounts.clear();
-	keyDataUniqueCounts = 0;
-	for (auto& keyValue : keyData) {
-		keyDataCounts.push_back(keyValue);
-	}
-	std::sort(keyDataCounts.begin(), keyDataCounts.end(), SortFunction);
-	for (auto i = 0; i < keyDataCounts.size(); ++i) {
-		if (i != 0 && keyDataCounts[i].second != keyDataCounts[i-1].second) {
-			++keyDataUniqueCounts;
-		}
+const char* toString(CorsairError error)
+{
+	switch (error) {
+	case CE_Success: return "CE_Success";
+	case CE_ServerNotFound: return "CE_ServerNotFound";
+	case CE_NoControl: return "CE_NoControl";
+	case CE_ProtocolHandshakeMissing: return "CE_ProtocolHandshakeMissing";
+	case CE_IncompatibleProtocol: return "CE_IncompatibleProtocol";
+	case CE_InvalidArguments: return "CE_InvalidArguments";
+	default: return "unknown error";
 	}
 }
 
+using KeyData = unordered_map<int /* Key ID */, int /* Number of Presses */>;
+using KeyStates = unordered_map<DWORD, bool>;
+
+KeyData keyData = KeyData();
+KeyStates keyStates = KeyStates();
+int keyboardDeviceIndex;
+
+vector<pair<int, int>> keyDataCounts; // used to sort keys into most presses
+int keyDataUniqueCounts; // Number of unique press totals
+
+HHOOK keyboardHook;
+HANDLE console;
+
+vector<CorsairLedColor> ledData;
+
+// Functions:
+bool SortFunction(pair<int, int> i, pair<int, int> j) { return i.second < j.second; };
+int LerpFloor(float a, float b, float t);
+vector<string> Split(const string& s, char delim);
+string FillString(string original, int size, bool onLeft = true);
+CorsairLedColor GetMappedColor(CorsairLedId id, float normalizedValue);
+
+void GotoXY(int x, int y);
+
+void LoadKeyData();
+void HandleEnd();
+
+void UpdateKeyDataCounts();
 void WriteKeyDataToConsole(CorsairLedId pressed);
 
-// The bit that handles the keypresses
-LRESULT CALLBACK HookProcedure(int nCode, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK KeyboardHookProcedure(int nCode, WPARAM wParam, LPARAM lParam);
+//LRESULT CALLBACK WindowsProcedure(HWND handle, UINT uMsg, WPARAM wParam, LPARAM lParam); // Implement later if I can figure it out.
+BOOL WINAPI ConsoleHandler(DWORD CEvent);
 
-	KBDLLHOOKSTRUCT* p = (KBDLLHOOKSTRUCT*)lParam;
+// MAIN FUNCTION
+int main() {
+	// Get the Console
+	console = GetStdHandle(STD_OUTPUT_HANDLE);
 
-	if (nCode == HC_ACTION) {
-		if (wParam == WM_SYSKEYDOWN || wParam == WM_KEYDOWN) {
-			if (p->vkCode) {
-				// check if the key isnt already pressed
-				if (keyStates[p->vkCode] == false) {
-					if (DWordToLedId(p->vkCode) != CLI_Invalid) {
-						keyData[DWordToLedId(p->vkCode)] += 1;
-						//CalculateCorrectMinMax();
-						FixKeyDataCounts();
-						WriteKeyDataToConsole(DWordToLedId(p->vkCode));
-					}
-				}
-				keyStates[p->vkCode] = true;
+	// Try to connect to Corsair SDK
+	while (true) {
+		CorsairPerformProtocolHandshake();
+		if (const auto error = CorsairGetLastError()) {
+			cout << "Handshake failed: " << toString(error) << "\nPress R to retry or any other key to quit" << endl;
+			char in = getchar();
+			if (in != 'r' && in != 'R') {
+				return -1;
 			}
 		}
-		else if (wParam == WM_SYSKEYUP || wParam == WM_KEYUP) {
-			if (p->vkCode) {
-				keyStates[p->vkCode] = false;
-			}
+		else {
+			break;
 		}
 	}
 
-	return CallNextHookEx(NULL, nCode, wParam, lParam);
+	// Get connected Corsair devices
+	auto deviceCount = CorsairGetDeviceCount();
+	if (deviceCount <= 0) {
+		cout << "No corsair devices found\nPress any key to quit." << endl;
+		getchar();
+		return -1;
+	}
+	// Find a keyboard with lighting capabilities
+	for (auto i = 0; i < deviceCount; ++i) {
+		auto info = CorsairGetDeviceInfo(i);
+		if (info->type == CDT_Keyboard && info->capsMask == (CDC_Lighting)) {
+			keyboardDeviceIndex = i;
+			if (const auto ledPositions = CorsairGetLedPositionsByDeviceIndex(keyboardDeviceIndex)) {
+				for (auto j = 0; j < ledPositions->numberOfLed; ++j) {
+					keyData[static_cast<int>(ledPositions->pLedPosition[j].ledId)] = 0;
+				}
+			}
+			break;
+		}
+	}
+	// Check if the keydata was filled out
+	if (keyData.empty()) {
+		cout << "No keyboard with controllable lighting found\nPress any key to quit." << endl;
+		getchar();
+		return -1;
+	}
+
+	// fill out key states
+	for (auto i = 1; i < 255; i++) {
+		keyStates[i] = false;
+	}
+
+	std::atomic_bool continueExecution{ true };
+	std::thread lightingThread([&continueExecution] {
+		while (continueExecution) {
+			CorsairSetLedsColorsBufferByDeviceIndex(keyboardDeviceIndex, static_cast<int>(ledData.size()), ledData.data());
+			CorsairSetLedsColorsFlushBufferAsync(nullptr, nullptr);
+			this_thread::sleep_for(chrono::milliseconds(25));
+		}
+	});
+
+	keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardHookProcedure, GetModuleHandle(NULL), NULL);
+	if (keyboardHook) {
+		if (SetConsoleCtrlHandler((PHANDLER_ROUTINE)ConsoleHandler, TRUE) == FALSE) {
+			return -1;
+		}
+
+		LoadKeyData();
+
+		std::cout << "STARTED KEYBOARD HEATMAPPER\n";
+		CorsairRequestControl(CAM_ExclusiveLightingControl);
+		MSG msg;
+		while (GetMessage(&msg, NULL, 0, 0) > 0) {
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+
+	}
+
+	continueExecution = false;
+	if (keyboardHook) {
+		UnhookWindowsHookEx(keyboardHook);
+	}
+	// end thread
+	lightingThread.join();
+
+	return 0;
 }
 
+// Filling functions:
 int LerpFloor(float a, float b, float t) {
-	//return static_cast<int>(a + std::max<float>(0.f, std::min<float>(1.f, 1.f + (0.3f * std::log(t)))) * (b - a));
-	return static_cast<int>(a + std::max<float>(0.f, std::min<float>(1.f, t)) * (b - a));
+	return static_cast<int>(a + max<float>(0.f, min<float>(1.f, t)) * (b - a));
 }
+vector<string> Split(const string& s, char delim) {
+	vector<string> result;
+	stringstream ss(s);
+	string item;
 
+	while (getline(ss, item, delim)) {
+		result.push_back(item);
+	}
+
+	return result;
+}
+string FillString(string original, int size, bool onLeft) {
+	auto s = original.size();
+	if (onLeft) {
+		for (auto i = s; i < size; ++i) {
+			original.append(" ");
+		}
+		return original;
+	}
+	string temp = "";
+	for (auto i = 0; i < size - s; ++i) {
+		temp.append(" ");
+	}
+	temp.append(original);
+	return temp;
+	
+}
 CorsairLedColor GetMappedColor(CorsairLedId id, float normalizedValue) {
 	auto ledColor = CorsairLedColor();
 	ledColor.ledId = id;
-	
-	/*
-	if (normalizedValue < 0.5f) {
-		ledColor.r = 0;
-		ledColor.g = LerpFloor(0.f, 255.f, normalizedValue * 2.f);
-		ledColor.b = LerpFloor(255.f, 0.f, normalizedValue * 2.f);
-	}
-	else {
-		ledColor.r = LerpFloor(0.f, 255.f, (normalizedValue - 0.5f) * 2.f);
-		ledColor.g = LerpFloor(255.f, 0.f, (normalizedValue - 0.5f) * 2.f);
-		ledColor.b = 0;
-	}*/
+
 	if (LedIdToString(id) == "UNKNOWN" || id == CLK_Fn || id == CLK_WinLock || id == CLK_Profile || id == CLK_G1 || id == CLK_G2 || id == CLK_G3 || id == CLK_G4 || id == CLK_G5 || id == CLK_G6) {
 		ledColor.r = 255;
 		ledColor.g = 0;
@@ -444,15 +489,55 @@ CorsairLedColor GetMappedColor(CorsairLedId id, float normalizedValue) {
 	return ledColor;
 }
 
+void GotoXY(int x, int y) {
+	COORD pos = { x, y };
+	SetConsoleCursorPosition(console, pos);
+}
+
+void LoadKeyData() {
+	string dataString = "";
+	fstream dataFile;
+	dataFile.open("D:/_KeyboardLightingData/KeyData.txt", ios::in);
+	if (!dataFile) {
+		return;
+	}
+	char ch;
+	while (true) {
+		dataFile >> ch;
+		if (dataFile.eof()) { break; }
+		dataString += ch;
+	}
+	dataFile.close();
+
+	cout << "===== LOADING DATA =====\n";
+
+	vector<string> mainVector = Split(dataString, '|');
+	vector<string> subVector;
+	stringstream stream;
+	int id;
+	int value;
+	for (auto i = 0; i < static_cast<int>(mainVector.size()); ++i) {
+
+		subVector = Split(mainVector[i], '=');
+		id = stoi(subVector[0]);
+		value = stoi(subVector[1]);
+		if (value < 0) value = 0;
+		keyData[id] = value;
+	}
+
+	UpdateKeyDataCounts();
+
+	WriteKeyDataToConsole(CLI_Invalid);
+}
 void HandleEnd() {
-	std::cout << "\nSHUTTING DOWN\n";
+	cout << "\nSHUTTING DOWN\n";
 	if (keyboardHook) {
 		UnhookWindowsHookEx(keyboardHook);
 	}
 	CorsairReleaseControl(CAM_ExclusiveLightingControl);
 
-	std::fstream dataFile;
-	dataFile.open("D:/_KeyboardLightingData/KeyData.txt", std::ios::out);
+	fstream dataFile;
+	dataFile.open("D:/_KeyboardLightingData/KeyData.txt", ios::out);
 	if (!dataFile) {
 		return;
 	}
@@ -460,13 +545,106 @@ void HandleEnd() {
 		dataFile << keyValue.first << "=" << keyValue.second << "|";
 	}
 	dataFile.close();
-	std::cout << "COMPLETE\n";
-	std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+	cout << "COMPLETE\n";
+	this_thread::sleep_for(chrono::milliseconds(1000));
 }
 
-BOOL WINAPI ConsoleHandler(DWORD CEvent)
-{
-	char mesg[128];
+void UpdateKeyDataCounts() {
+	keyDataCounts.clear();
+	keyDataUniqueCounts = 0;
+	for (auto& keyValue : keyData) {
+		keyDataCounts.push_back(keyValue);
+	}
+	sort(keyDataCounts.begin(), keyDataCounts.end(), SortFunction);
+	for (auto i = 0; i < keyDataCounts.size(); ++i) {
+		if (i != 0 && keyDataCounts[i].second != keyDataCounts[i - 1].second) {
+			++keyDataUniqueCounts;
+		}
+	}
+}
+void WriteKeyDataToConsole(CorsairLedId pressed) {
+	GotoXY(0, 0);
+	int uniqueCounts = 0;
+	string output = "";
+	ledData.clear();
+	for (auto i = 0; i < keyDataCounts.size(); ++i) {
+		if (i != 0 && keyDataCounts[i].second != keyDataCounts[i - 1].second) {
+			++uniqueCounts;
+		}
+		auto ledColor = GetMappedColor(static_cast<CorsairLedId>(keyDataCounts[i].first), static_cast<float>(uniqueCounts) / static_cast<float>(keyDataUniqueCounts));
+		ledData.push_back(ledColor);
+		if (LedIdToString(ledColor.ledId) == "UNKNOWN") continue;
+		if (pressed == ledColor.ledId) {
+			cout << output;
+			SetConsoleTextAttribute(console, 4);
+			output = "";
+			output.append("ID: ");
+			output.append(FillString(LedIdToString(static_cast<CorsairLedId>(keyDataCounts[i].first)), 28));
+			output.append("[");
+			output.append(FillString(to_string(keyDataCounts[i].second), 6, false));
+			output.append("] -> R");
+			output.append(FillString(to_string(ledColor.r), 3));
+			output.append(" G");
+			output.append(FillString(to_string(ledColor.g), 3));
+			output.append(" B");
+			output.append(FillString(to_string(ledColor.b), 3));
+			output.append("\n");
+			cout << output;
+			SetConsoleTextAttribute(console, 7);
+			output = "";
+			continue;
+		}
+		output.append("ID: ");
+		output.append(FillString(LedIdToString(static_cast<CorsairLedId>(keyDataCounts[i].first)), 28));
+		output.append("[");
+		output.append(FillString(to_string(keyDataCounts[i].second), 6, false));
+		output.append("] -> R");
+		output.append(FillString(to_string(ledColor.r), 3));
+		output.append(" G");
+		output.append(FillString(to_string(ledColor.g), 3));
+		output.append(" B");
+		output.append(FillString(to_string(ledColor.b), 3));
+		output.append("\n");
+	}
+	output.append("\n");
+	cout << output << endl;
+}
+
+
+LRESULT CALLBACK KeyboardHookProcedure(int nCode, WPARAM wParam, LPARAM lParam) {
+	KBDLLHOOKSTRUCT* p = (KBDLLHOOKSTRUCT*)lParam;
+
+	if (nCode == HC_ACTION) {
+		if (wParam == WM_SYSKEYDOWN || wParam == WM_KEYDOWN) {
+			if (p->vkCode) {
+				// check if the key isnt already pressed
+				if (keyStates[p->vkCode] == false) {
+					CorsairLedId id = DWordToLedId(p->vkCode);
+					if (id != CLI_Invalid) {
+						if (id == CLK_Enter) {
+							if ((p->vkCode & LLKHF_EXTENDED) == LLKHF_EXTENDED) {
+								id = CLK_KeypadEnter;
+							}
+						}
+						keyData[id] += 1;
+						UpdateKeyDataCounts();
+						WriteKeyDataToConsole(id);
+					}
+				}
+				keyStates[p->vkCode] = true;
+			}
+		}
+		else if (wParam == WM_SYSKEYUP || wParam == WM_KEYUP) {
+			if (p->vkCode) {
+				keyStates[p->vkCode] = false;
+			}
+		}
+	}
+
+	return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+BOOL WINAPI ConsoleHandler(DWORD CEvent) {
+	char mesg[128]; // Dont know if this is needed
 
 	switch (CEvent)
 	{
@@ -480,244 +658,6 @@ BOOL WINAPI ConsoleHandler(DWORD CEvent)
 
 	}
 	return TRUE;
-}
-
-std::vector<std::string> split(const std::string& s, char delim) {
-	std::vector<std::string> result;
-	std::stringstream ss(s);
-	std::string item;
-
-	while (getline(ss, item, delim)) {
-		result.push_back(item);
-	}
-
-	return result;
-}
-
-void LoadData() {
-	std::string dataString = "";
-	std::fstream dataFile;
-	dataFile.open("D:/_KeyboardLightingData/KeyData.txt", std::ios::in);
-	if (!dataFile) {
-		return;
-	}
-	char ch;
-	while (true) {
-		dataFile >> ch;
-		if (dataFile.eof()) { break; }
-		dataString += ch;
-	}
-	dataFile.close();
-
-	std::cout << "===== LOADING DATA =====\n";
-
-	std::vector<std::string> mainVector = split(dataString, '|');
-	std::vector<std::string> subVector;
-	std::stringstream stream;
-	int id;
-	int value;
-	for (auto i = 0; i < static_cast<int>(mainVector.size()); ++i) {
-		
-		subVector = split(mainVector[i], '=');
-		id = stoi(subVector[0]);
-		value = stoi(subVector[1]);
-		if (value < 0) value = 0;
-		//if (value > keyDataMaxCount) keyDataMaxCount = value;
-		keyData[id] = value;
-	}
-
-	
-
-	FixKeyDataCounts();
-
-	WriteKeyDataToConsole(CLI_Invalid);
-
-	//std::cout << "Min : " << keyDataMinCount << "\nMax : " << keyDataMaxCount << "\n";
-
-	//CorsairLedColor ledColor;
-	//for (auto& keyValue : keyData) {
-	//	ledColor = GetMappedColor(static_cast<CorsairLedId>(keyValue.first), static_cast<float>(keyValue.second) / static_cast<float>(keyDataMaxCount-keyDataMinCount));
-	//	std::cout << "ID: " << LedIdToString(static_cast<CorsairLedId>(keyValue.first)) << " -> R" << ledColor.r << " G" << ledColor.g << " B" << ledColor.b << " (" << static_cast<float>(keyValue.second) << " / " << static_cast<float>(keyDataMaxCount - keyDataMinCount) << " = " << static_cast<float>(keyValue.second) / static_cast<float>(keyDataMaxCount - keyDataMinCount) <<  ")\n";
-	//}
-
-	
-}
-
-std::string FillString(std::string original, int size, bool onLeft = true) {
-	auto s = original.size();
-	if (onLeft) {
-		for (auto i = s; i < size; ++i) {
-			original.append(" ");
-		}
-	}
-	else {
-		std::string temp = "";
-		for (auto i = 0; i < size-s; ++i) {
-			temp.append(" ");
-		}
-		temp.append(original);
-		return temp;
-	}
-	return original;
-}
-
-void GotoXY(int x, int y) {
-	COORD pos = { x, y };
-	SetConsoleCursorPosition(console, pos);
-}
-
-void WriteKeyDataToConsole(CorsairLedId pressed) {
-	GotoXY(0, 0);
-	int uniqueCounts = 0;
-	std::string output = "";
-	ledData.clear();
-	for (auto i = 0; i < keyDataCounts.size(); ++i) {
-		if (i != 0 && keyDataCounts[i].second != keyDataCounts[i - 1].second) {
-			++uniqueCounts;
-		}
-		auto ledColor = GetMappedColor(static_cast<CorsairLedId>(keyDataCounts[i].first), static_cast<float>(uniqueCounts) / static_cast<float>(keyDataUniqueCounts));
-		ledData.push_back(ledColor);
-		//std::cout << "ID: " << std::setw(28) << std::left << LedIdToString(static_cast<CorsairLedId>(keyDataCounts[i].first)) << "[" << std::setw(6) << std::right << keyDataCounts[i].second << "] -> R" << std::setw(3) << std::left << ledColor.r << " G" << std::setw(3) << ledColor.g << " B" << std::setw(3) << ledColor.b << " (" << static_cast<float>(uniqueCounts) << " / " << static_cast<float>(keyDataUniqueCounts) << " = " << static_cast<float>(uniqueCounts) / static_cast<float>(keyDataUniqueCounts) << ")" << std::endl;
-		if (LedIdToString(ledColor.ledId) == "UNKNOWN") continue;
-		if (pressed == ledColor.ledId) {
-			std::cout << output;
-			SetConsoleTextAttribute(console, 4);
-			output = "";
-			output.append("ID: ");
-			output.append(FillString(LedIdToString(static_cast<CorsairLedId>(keyDataCounts[i].first)), 28));
-			output.append("[");
-			output.append(FillString(std::to_string(keyDataCounts[i].second), 6, false));
-			output.append("] -> R");
-			output.append(FillString(std::to_string(ledColor.r), 3));
-			output.append(" G");
-			output.append(FillString(std::to_string(ledColor.g), 3));
-			output.append(" B");
-			output.append(FillString(std::to_string(ledColor.b), 3));
-			output.append("\n");
-			std::cout << output;
-			SetConsoleTextAttribute(console, 7);
-			output = "";
-			continue;
-		}
-		output.append("ID: ");
-		output.append(FillString(LedIdToString(static_cast<CorsairLedId>(keyDataCounts[i].first)), 28));
-		output.append("[");
-		output.append(FillString(std::to_string(keyDataCounts[i].second), 6, false));
-		output.append("] -> R");
-		output.append(FillString(std::to_string(ledColor.r), 3));
-		output.append(" G");
-		output.append(FillString(std::to_string(ledColor.g), 3));
-		output.append(" B");
-		output.append(FillString(std::to_string(ledColor.b), 3));
-		output.append("\n");
-	}
-	output.append("\n");
-	std::cout << output;
-
-	//std::cout << "\n";
-}
-
-int main()
-{
-	console = GetStdHandle(STD_OUTPUT_HANDLE);
-
-	// Start corsair SDK
-	CorsairPerformProtocolHandshake();
-	if (const auto error = CorsairGetLastError()) {
-		std::cout << "Handshake failed: " << toString(error) << "\nPress any key to quit." << std::endl;
-		getchar();
-		return -1;
-	}
-
-	// fill up keyData with available keys and the amount of times they've been pressed
-	if (const auto ledPositions = CorsairGetLedPositionsByDeviceIndex(0)) {
-		for (auto i = 0; i < ledPositions->numberOfLed; ++i) {
-			keyData[static_cast<int>(ledPositions->pLedPosition[i].ledId)] = 0;
-		}
-	}
-	if (keyData.empty()) {
-		return 1;
-	}
-
-	//auto availableKeys = getAvailableKeys();
-	//if (availableKeys.empty()) {
-	//	return 1;
-	//}
-
-	// sort out keyStates;
-	keyStates = getKeyStates();
-
-	//for (auto i = 0.f; i < 1.1f; i+=0.1f) {
-	//	std::cout << i << " = " << LerpFloor(0,255,i) << "\n";
-	//}
-
-	// the thread that controlls the RGB of the keyboard
-	std::atomic_bool continueExecution{ true };
-	std::thread lightingThread([&continueExecution] {
-		while (continueExecution) {
-			/*
-			//std::vector<CorsairLedColor> vec;
-			if (keyDataMaxCount == 0){
-				for (auto& keyValue : keyData) {
-					auto ledColor = CorsairLedColor();
-					ledColor.ledId = static_cast<CorsairLedId>(keyValue.first);
-					ledColor.r = 0;
-					ledColor.g = 0;
-					ledColor.b = 255;
-					vec.push_back(ledColor);
-				}
-			}
-			else {
-				/*
-				for (auto& keyValue : keyData) {
-					//auto ledColor = GetMappedColor(static_cast<CorsairLedId>(keyValue.first), static_cast<float>(keyValue.second - keyDataMinCount) / static_cast<float>(keyDataMaxCount-keyDataMinCount));
-					auto ledColor = GetMappedColor(static_cast<CorsairLedId>(keyValue.first), );
-					vec.push_back(ledColor);
-				}* /
-				//int uniqueCounts = 0;
-				//for (auto i = 0; i < ledData.size(); ++i) {
-					//if (i != 0 && keyDataCounts[i].second != keyDataCounts[i-1].second) {
-					//	++uniqueCounts;
-					//}
-					//auto ledColor = GetMappedColor(static_cast<CorsairLedId>(keyDataCounts[i].first), static_cast<float>(uniqueCounts) / static_cast<float>(keyDataUniqueCounts));
-					//vec.push_back(ledColor);
-				//}
-			}*/
-			CorsairSetLedsColorsBufferByDeviceIndex(0, static_cast<int>(ledData.size()), ledData.data());
-			CorsairSetLedsColorsFlushBufferAsync(nullptr, nullptr);
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(25));
-		}
-	});
-
-	// start keyboard hook
-	keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, HookProcedure, GetModuleHandle(NULL), NULL);
-
-	// do the hook thing
-	if (keyboardHook) {
-		if (SetConsoleCtrlHandler((PHANDLER_ROUTINE)ConsoleHandler, TRUE) == FALSE) {
-			return -1;
-		}
-
-		LoadData();
-
-		std::cout << "STARTED KEYBOARD HEATMAPPER\n";
-		CorsairRequestControl(CAM_ExclusiveLightingControl);
-		MSG msg;
-		while (GetMessage(&msg, NULL, 0, 0) > 0) {
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
-		}
-		
-	}
-
-	
-	
-	continueExecution = false;
-	// end thread
-	lightingThread.join();
-
-	return 0;
 }
 
 
