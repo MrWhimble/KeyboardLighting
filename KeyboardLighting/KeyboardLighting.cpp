@@ -622,7 +622,7 @@ LRESULT CALLBACK KeyboardHookProcedure(int nCode, WPARAM wParam, LPARAM lParam) 
 					CorsairLedId id = DWordToLedId(p->vkCode);
 					if (id != CLI_Invalid) {
 						if (id == CLK_Enter) {
-							if ((p->vkCode & LLKHF_EXTENDED) == LLKHF_EXTENDED) {
+							if ((p->flags & LLKHF_EXTENDED) == LLKHF_EXTENDED) {
 								id = CLK_KeypadEnter;
 							}
 						}
